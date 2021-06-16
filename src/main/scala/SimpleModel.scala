@@ -3,7 +3,7 @@ import org.apache.spark.ml.feature.LabeledPoint
 import org.apache.spark.ml.linalg.Vectors
 import org.apache.spark.ml.{Pipeline, PipelineStage}
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.{Dataset, SparkSession}
+import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
 
 import scala.collection.mutable
 
@@ -15,6 +15,9 @@ object SimpleModel {
       .master("local[4]")
       .getOrCreate()
 
+    spark.sparkContext.setLogLevel("ERROR")
+
+
     import spark.implicits._
 
     val eventsFile = "src/main/resources/events.csv"
@@ -22,32 +25,43 @@ object SimpleModel {
     val events = spark
       .read
       .option("header", "true")
+      .option("inferSchema", "true")
       .csv(eventsFile)
       .cache()
 
     val conversions = spark
       .read
       .option("header", "true")
+      .option("inferSchema", "true")
       .csv(conversionsFile)
-      .withColumn("converted", lit(1.0))
+      .withColumn("CONVERTED", lit(1.0))
       .cache()
 
-    val stages = new mutable.ArrayBuffer[PipelineStage]()
 
-    val dataset: Dataset[LabeledPoint] =
-      events.join(conversions, Seq("ID"), "left")
+
+    val labeledEvents: DataFrame =  events.join(conversions, Seq("ID"), "left")
+
+    labeledEvents.printSchema()
+    labeledEvents.show()
+
+    val labeledFeatures: Dataset[LabeledPoint] =
+      labeledEvents
         .map(r => LabeledPoint(
-          r.getAs[Double]("converted"),
-          Vectors.dense(Array(Option(r.getAs[String]("HOTEL_CITY_ID")).map(_.toDouble).getOrElse(0.0),
-            Option(r.getAs[String]("TIME_TO_ARRIVAL")).map(_.toDouble).getOrElse(0.0),
-            Option(r.getAs[String]("TIME_SPENT_ON_SITE")).map(_.toDouble).getOrElse(0.0)))))
+          r.getAs[Double]("CONVERTED"),
+          Vectors.dense(Array(Option(r.getAs[Int]("HOTEL_CITY_ID")).map(_.toDouble).getOrElse(0.0),
+            Option(r.getAs[Int]("TIME_TO_ARRIVAL")).map(_.toDouble).getOrElse(0.0),
+            Option(r.getAs[Int]("TIME_SPENT_ON_SITE")).map(_.toDouble).getOrElse(0.0)))))
 
-    val Array(trainingDataSet, testData) = dataset.randomSplit(Array(0.7, 0.3), 100)
+    val Array(trainingDataSet, testData) = labeledFeatures.randomSplit(Array(0.7, 0.3), 100)
     val lr = new LogisticRegression().setProbabilityCol("probability")
 
-    stages += lr
+    val pipelineStages = Array(lr)
 
-    val pipeline = new Pipeline().setStages(stages.toArray)
+
+    val pipeline = new Pipeline().setStages(pipelineStages)
+
+    println("Training Model...")
+
     val pipelineModel = pipeline.fit(trainingDataSet)
     val model = pipelineModel.stages.last.asInstanceOf[LogisticRegressionModel]
     val trainingAuc = model.binarySummary.areaUnderROC
